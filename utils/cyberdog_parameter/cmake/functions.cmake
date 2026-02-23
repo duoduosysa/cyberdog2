@@ -3,7 +3,6 @@ include(FindPkgConfig)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/modules/")
 
-set(PYTHON_EXECUTABLE /usr/bin/python3)
 include(${CMAKE_CURRENT_LIST_DIR}/FindCython.cmake)
 find_package(PythonInterp 3 REQUIRED)
 

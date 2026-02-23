@@ -58,39 +58,6 @@ install(
   INCLUDES DESTINATION include
 )
 
-# Re-export the system's closed-source libcyberdog_fds.so
-# The system-installed cyberdog_common (/opt/ros2/cyberdog/) ships cyberdog_fds,
-# but this open-source overlay only builds cyberdog_log. Without re-exporting,
-# downstream packages (motion_manager, etc.) fail to find cyberdog_common::cyberdog_fds.
-#
-# Since cyberdog_fds is a system library at a fixed path on NX, we use absolute paths
-# instead of relative _IMPORT_PREFIX (which caused semicolon escaping issues in file(WRITE)).
-set(_SYSTEM_FDS_LIB "/opt/ros2/cyberdog/lib/libcyberdog_fds.so")
-set(_SYSTEM_FDS_INC "/opt/ros2/cyberdog/include")
-if(EXISTS ${_SYSTEM_FDS_LIB})
-  # Generate cmake export file using configure_file for reliable content generation
-  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/cyberdog_fdsExport.cmake"
-"# Re-exported closed-source cyberdog_fds from system install
-if(NOT TARGET cyberdog_common::cyberdog_fds)
-  add_library(cyberdog_common::cyberdog_fds SHARED IMPORTED)
-  set_target_properties(cyberdog_common::cyberdog_fds PROPERTIES
-    INTERFACE_INCLUDE_DIRECTORIES \"${_SYSTEM_FDS_INC}\"
-    IMPORTED_LOCATION \"${_SYSTEM_FDS_LIB}\"
-    IMPORTED_SONAME \"libcyberdog_fds.so\"
-  )
-endif()
-")
-
-  # Generate a CONFIG_EXTRAS bridge file for ament_package
-  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/cyberdog_fds-extras.cmake"
-"include(\"\${cyberdog_common_DIR}/cyberdog_fdsExport.cmake\")
-")
-
-  # Install the export file to the cmake directory
-  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cyberdog_fdsExport.cmake"
-    DESTINATION share/${PROJECT_NAME}/cmake/)
-endif()
-
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
@@ -126,8 +93,4 @@ endif()
 ament_export_include_directories(include)
 ament_export_targets(cyberdog_log HAS_LIBRARY_TARGET)
 ament_export_dependencies(${dependencies})
-if(EXISTS ${_SYSTEM_FDS_LIB})
-  ament_package(CONFIG_EXTRAS "${CMAKE_CURRENT_BINARY_DIR}/cyberdog_fds-extras.cmake")
-else()
-  ament_package()
-endif()
+ament_package()

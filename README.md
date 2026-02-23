@@ -112,139 +112,161 @@ function get_not_unlocked()
 
 ## 编译与部署
 
-### 在 NX 上直接编译 vs Docker 交叉编译
+### 编译方式：Docker 交叉编译
 
-| | **在 NX 上直接编译** | **在电脑上 Docker 交叉编译** |
-|---|---|---|
-| **前提** | 能 SSH 进 NX | Docker + 小米依赖包可下载 |
-| **优势** | 环境已就绪，不需要额外配置 | 不占用机器人资源 |
-| **劣势** | NX 算力有限，全量编译较慢 | 小米服务器可能已关闭 |
-| **推荐度** | ⭐⭐⭐⭐⭐ | ⭐⭐（有风险） |
+必须使用小米官方 Docker 镜像编译，镜像中包含 WebRTC 头文件/静态库、galaxy-fds-sdk、gRPC 等闭源或定制依赖，这些在 NX 本地系统上不存在，无法通过 apt 安装。
 
-### 推荐路径：在 NX 上直接编译
+> **为什么不能在 NX 上直接编译？** 实测 NX 本地编译会因缺少 `/usr/local/include/webrtc_headers/`（WebRTC 开发头文件）、`/usr/local/lib/libwebrtc.a`（静态库）等依赖导致 `image_transmission` 等包无法编译。这些文件只在官方 Docker 镜像的 `docker-depend.tar.gz` 中提供。
 
-NX 上预装了 ROS2 Galactic、cyberdog 依赖库及 `colcon` 编译工具（已实测确认位于 `/usr/bin/colcon`），不需要 Docker，不需要交叉编译，不需要从小米服务器下载任何东西（Dockerfile 里那些链接可能已失效）。
+官方 Dockerfile 说明：[MiRoboticsLab/blogs - Dockerfile 使用说明](https://github.com/MiRoboticsLab/blogs/blob/rolling/docs/cn/dockerfile_instructions_cn.md)
+
+#### 步骤 1：安装 Docker Desktop（Windows 用户）
+
+1. 下载 Docker Desktop：https://www.docker.com/products/docker-desktop/
+2. 运行安装程序，安装时勾选 **"Use WSL 2 instead of Hyper-V"**
+3. 安装完成后**重启电脑**
+4. 打开 Docker Desktop，等待左下角显示绿色 **"Engine running"**
+
+> Docker Desktop 免费用于个人和教育用途。它内置 WSL2（Windows 的 Linux 子系统），不需要额外安装 VMware 或 Ubuntu。
+
+验证安装（在 PowerShell 中执行）：
+
+```powershell
+docker --version
+docker run hello-world
+```
+
+看到 `Hello from Docker!` 即表示安装成功。
+
+#### 步骤 2：启用 arm64 模拟（qemu）
+
+CyberDog 2 的 NX 是 arm64 架构，而你的电脑是 x86，需要 qemu 来模拟 arm64。
+在 PowerShell 中执行：
+
+```powershell
+docker run --privileged multiarch/qemu-user-static --reset -p yes
+```
+
+此命令只需执行一次（重启电脑后可能需要重新执行）。
+
+#### 步骤 3：制作编译镜像
+
+从官方 Dockerfile 说明页面复制完整的 Dockerfile 内容，保存到本地：
+
+```powershell
+# 在你喜欢的位置创建目录
+mkdir E:\cyberdog_docker
+# 用文本编辑器在该目录下创建名为 Dockerfile 的文件（无扩展名）
+# 将官方 Dockerfile 内容粘贴进去
+# 内容来源：https://github.com/MiRoboticsLab/blogs/blob/rolling/docs/cn/dockerfile_instructions_cn.md
+```
+
+构建镜像（耗时较长，需下载大量依赖）：
+
+```powershell
+cd E:\cyberdog_docker
+docker build -t cyberdog_build:1.0 .
+```
+
+> **注意**：Dockerfile 中的依赖包从 `cnbj2m.fds.api.xiaomi.com` 下载。如遇下载失败（小米服务器可能已关闭），需要自行寻找离线包或从已有 Docker 镜像导出。
+
+镜像关键内容（Dockerfile 第 11 步安装）：
+- `/usr/local/include/webrtc_headers/` — WebRTC 头文件（`image_transmission` 需要）
+- `/usr/local/lib/libwebrtc.a` — WebRTC 静态库
+- `/usr/local/lib/libgalaxy-fds-sdk-cpp.a` — FDS 云存储 SDK
+- `/usr/local/lib/` 下的 gRPC 相关库
+- Python 3 设为默认（`/usr/bin/python` → `python3`）
+
+#### 步骤 4：启动容器并编译
+
+```powershell
+# 启动容器，将本地源码目录映射到容器内
+# Windows 路径用 / 分隔，Docker Desktop 会自动转换
+docker run --privileged=true -it -v E:/机器狗2/cyberdog2/cyberdog_ws_rolling:/home/builder/cyberdog_ws cyberdog_build:1.0 bash
+```
+
+现在你已进入容器（Linux 终端），在容器内执行：
 
 ```bash
-# 1. SSH 进 NX（前提：已通过上述方式解锁）
+# 加载 ROS2 环境
+source /opt/ros2/galactic/setup.bash
+
+cd /home/builder/cyberdog_ws
+
+# 编译单个包及其依赖（首次编译某个包时用）
+colcon build --merge-install --packages-up-to <包名>
+
+# 后续修改同一个包（用 --packages-select，更快）
+colcon build --merge-install --packages-select <包名>
+
+# 全量编译所有包
+colcon build --merge-install
+```
+
+> **提示**：容器关闭后数据不会丢失（因为源码目录是映射的），但容器内临时安装的工具会丢失。如果想保留容器状态，用 `docker commit` 保存。
+
+#### 关于 cyberdog_fds 闭源库（本仓库已修复，无需手动操作）
+
+系统预装的 `cyberdog_common` 导出两个 cmake 目标：
+- `cyberdog_log`（开源，本仓库有源码）
+- `cyberdog_fds`（闭源，小米 FDS 云存储 SDK 封装）
+
+ROS2 的 overlay 机制使本仓库的 `cyberdog_common` 覆盖系统版，但开源版本没有 `cyberdog_fds`，导致 `motion_manager` 等下游包编译失败。
+
+本仓库已通过手动生成 cmake 导出文件 + `ament_package(CONFIG_EXTRAS)` 注入解决：
+1. `install(FILES)` 拷贝系统的 `libcyberdog_fds.so`
+2. `file(WRITE cyberdog_fdsExport.cmake)` 手写导出文件定义 IMPORTED 目标
+3. `ament_package(CONFIG_EXTRAS)` 注入桥接文件
+
+详见 `utils/cyberdog_common/CMakeLists.txt` 第 61-106 行。
+
+#### 步骤 5：部署到机器狗
+
+```powershell
+# ── 在 PowerShell 中：将编译产物推送到 NX ──
+# 用 USB 线连接电脑和机器狗
+scp -r install/lib/<包名> mi@192.168.55.1:/home/mi/
+scp -r install/share/<包名> mi@192.168.55.1:/home/mi/
+scp -r install/include/<包名> mi@192.168.55.1:/home/mi/
+# 密码 123
+```
+
+```bash
+# ── SSH 进 NX 替换 ──
 ssh mi@192.168.55.1   # 密码 123
 
-# 2. 修复 pip（NX 上的 Python 3.6 pip 会因 /etc/mr813_version 二进制文件触发 UnicodeDecodeError）
-sudo mv /etc/mr813_version /etc/mr813_version.bak
-python3 -m pip install shyaml
-sudo mv /etc/mr813_version.bak /etc/mr813_version
+# 替换前备份（首次部署时做一次）
+sudo cp -r /opt/ros2/cyberdog /SDCARD/cyberdog.bak
 
-# 3. 修复 libg2o 的 setup 警告（可选，不影响编译）
-sudo touch /opt/ros2/galactic/share/libg2o/local_setup.bash
+# 单包替换（推荐，风险最小）
+sudo cp -rf /home/mi/<包名> /opt/ros2/cyberdog/lib/
+sudo cp -rf /home/mi/<包名> /opt/ros2/cyberdog/share/
+sudo cp -rf /home/mi/<包名> /opt/ros2/cyberdog/include/
+sudo rm -rf /home/mi/<包名>
 
-# 4. 克隆本仓库（建议克隆到 /SDCARD 以节省 eMMC 空间，eMMC 仅 14G 且已用 72%）
-cd /SDCARD
-git clone https://github.com/duoduosysa/cyberdog2.git cyberdog_ws
-cd cyberdog_ws
-
-# 5. 加载编译环境（cyberdog 的 setup.bash 会自动链式加载 galactic，只需 source 这一个）
-source /opt/ros2/cyberdog/setup.bash
-
-# 6. 安装编译所需的系统开发库
-sudo apt update && sudo apt install -y libnvinfer-dev libncurses-dev
-#   libnvinfer-dev  — cyberdog_action 等包需要 NvInfer.h（TensorRT 头文件）
-#   libncurses-dev  — cyberdog_vp_terminal 需要 ncurses.h（终端 UI 库）
-
-# 7. 【重要】关于 cyberdog_fds 闭源库的说明（本仓库已修复，无需手动操作）
-#
-#    ═══ 问题 ═══
-#    系统预装的 cyberdog_common（/opt/ros2/cyberdog/）导出两个 cmake 目标：
-#      - cyberdog_log（开源，本仓库有源码）
-#      - cyberdog_fds（闭源，小米 FDS 云存储 SDK 封装，依赖 galaxy-fds-sdk-cpp/Poco/crypto）
-#
-#    ROS2 的 overlay 机制：colcon 编译时，本仓库的 cyberdog_common 覆盖系统版。
-#    但开源版本只有 cyberdog_log，没有 cyberdog_fds，导致 motion_manager 等
-#    下游包编译失败：
-#      "Target motion_manager links to cyberdog_common::cyberdog_fds but target not found"
-#
-#    ═══ 修复过程（踩坑记录）═══
-#
-#    尝试 1（失败）：add_library(cyberdog_fds SHARED IMPORTED) + install(TARGETS cyberdog_fds EXPORT ...)
-#      → CMake 报错：install TARGETS given target "cyberdog_fds" which does not exist
-#      → 原因：CMake 不允许对 IMPORTED 目标执行 install(TARGETS)，IMPORTED 目标是"引用别人的库"，
-#        不是自己编译的，CMake 拒绝负责安装它。
-#
-#    尝试 2（失败）：去掉 install(TARGETS)，但保留 ament_export_targets(cyberdog_log cyberdog_fds ...)
-#      → CMake 报错：INSTALL(EXPORT) given unknown export "cyberdog_fds"
-#      → 原因：ament_export_targets 内部会调用 install(EXPORT "cyberdog_fds")，
-#        但这个导出集需要先由 install(TARGETS ... EXPORT cyberdog_fds) 创建，我们没创建所以报错。
-#
-#    最终方案（成功）：手动生成 cmake 导出文件 + ament_package(CONFIG_EXTRAS) 注入
-#      1) install(FILES /opt/ros2/cyberdog/lib/libcyberdog_fds.so DESTINATION lib) — 拷贝 .so
-#      2) file(WRITE cyberdog_fdsExport.cmake ...) — 手写 cmake 文件，定义 IMPORTED 目标
-#      3) file(WRITE cyberdog_fds-extras.cmake ...) — 桥接文件，include 上面的导出文件
-#      4) ament_package(CONFIG_EXTRAS cyberdog_fds-extras.cmake) — 告诉 ament 在下游
-#         find_package(cyberdog_common) 时自动 include 这个桥接文件
-#      5) ament_export_targets 只导出 cyberdog_log（走正常 cmake 流程）
-#
-#    这样下游包 find_package(cyberdog_common) 时，ament 会：
-#      - 自动加载 cyberdog_logExport.cmake（cmake 标准流程生成）
-#      - 自动加载 cyberdog_fds-extras.cmake → cyberdog_fdsExport.cmake（我们手动生成）
-#      - 两个目标 cyberdog_common::cyberdog_log 和 cyberdog_common::cyberdog_fds 都可用
-#
-#    相关修改见 utils/cyberdog_common/CMakeLists.txt 第 61-106 行。
-
-# 8a. 编译所有包（NX 上大约 2-3 小时）
-#     注意：NX 只有 8GB 内存，-j 设太高会导致 OOM（内存不足）触发系统重启！
-#     --allow-overriding：因为源码中的包和系统预装的重名（overlay 机制），
-#     新版 colcon 会要求显式确认覆盖，不加这个参数会报 warning 或阻塞。
-#     下面用 colcon list 自动获取所有包名，不用手写一百个包名。
-export MAKEFLAGS="-j1"
-colcon build --merge-install --parallel-workers 1  --allow-overriding $(colcon list --names-only | tr '\n' ' ')
-
-# 8b. 或只编译某个包及其依赖（首次编译该包时用）
-colcon build --merge-install --packages-up-to <包名> --allow-overriding <包名>
-
-# 8c. 或只编译某个包（后续修改同一个包时用，更快）
-colcon build --merge-install --packages-select <包名> --allow-overriding <包名>
-
-# ═══════════════════════════════════════════════════════════════
-# 9. 部署：替换到系统目录
-# ═══════════════════════════════════════════════════════════════
-#
-# ── 替换前：备份原装 + 记录当前状态 ──
-ros2 node list > /home/mi/nodes_before.txt
-ros2 topic list > /home/mi/topics_before.txt
-sudo cp -r /opt/ros2/cyberdog /SDCARD/cyberdog.bak   # 备份放 /SDCARD，eMMC 空间不够
-
-# ── 9a. 单包替换（推荐，风险最小）──
-#    只替换你修改过的那个包，其他包保持原装不动。
-sudo cp -rf install/lib/<包名> /opt/ros2/cyberdog/lib/
-sudo cp -rf install/share/<包名> /opt/ros2/cyberdog/share/
-sudo cp -rf install/include/<包名> /opt/ros2/cyberdog/include/
-
-# ── 9b. 全量替换（仅用于验证整个仓库编译结果是否可用）──
-#    注意：不要直接 cp install/* ，因为 install/ 下的 setup.bash 等文件
-#    里硬编码了 /SDCARD/cyberdog_ws/install 路径，会覆盖系统的正确路径。
-#    只拷贝 lib/ share/ include/ bin/ 四个子目录。
-for d in lib share include bin; do sudo cp -rf install/$d/* /opt/ros2/cyberdog/$d/; done
-
-# 10. 重启生效
+# 重启生效
 sudo reboot
+```
 
-# ── 替换后：验证 ──
-ros2 node list > /home/mi/nodes_after.txt
-ros2 topic list > /home/mi/topics_after.txt
-diff /home/mi/nodes_before.txt /home/mi/nodes_after.txt
-diff /home/mi/topics_before.txt /home/mi/topics_after.txt
-#   diff 没输出 → 节点/话题完全一致，替换成功
-#   少了节点   → 某个包有问题，用 journalctl -xe 查看日志排查
-#   APP 连接   → 确认手机 APP 能正常连接和控制
+#### 步骤 6：验证
 
-# ── 如果出问题：回滚 ──
+```bash
+ssh mi@192.168.55.1
+
+# 检查节点和话题是否正常
+ros2 node list
+ros2 topic list
+
+# 确认手机 APP 能正常连接和控制
+```
+
+#### 步骤 7：回滚（如果出问题）
+
+```bash
 sudo rm -rf /opt/ros2/cyberdog
 sudo mv /SDCARD/cyberdog.bak /opt/ros2/cyberdog
 sudo reboot
 ```
-
-以上编译和部署步骤参考自小米官方文档：[Dockerfile 使用说明 - 三、docker 编译并替换狗里面的功能包](https://github.com/MiRoboticsLab/blogs/blob/rolling/docs/cn/dockerfile_instructions_cn.md)，原文针对 Docker 交叉编译场景，此处适配为 NX 本机编译。
-
-> **额外提醒**：NX 的存储空间有限（eMMC），`git clone` 全量代码 + 编译产物会占不少空间。建议先 `df -h` 查看剩余空间，如果不够可以只编译需要修改的包。
 
 ## 系统通信架构
 
@@ -335,12 +357,6 @@ NX 和 MR813 之间通过 LCM（UDP 多播）通信，**不是 CAN 总线**。
 - 协议字定义：`motion/motion_action/include/motion_action/motion_macros.hpp`
 - LCM 收发实现：`motion/motion_action/src/motion_action.cpp`
 - LCM 桥接（IMU/里程计/电机温度）：`motion/motion_bridge/`
-
-### Docker 交叉编译（备选）
-
-进入 tools 目录下，可使用 Dockerfile 文件编译镜像，具体步骤可参考：[镜像编译](https://github.com/MiRoboticsLab/blogs/blob/rolling/docs/cn/dockerfile_instructions_cn.md)
-
-> **注意**：Dockerfile 中的依赖包从 `cnbj2m.fds.api.xiaomi.com` 下载，该服务器可能已关闭。如遇下载失败，请优先使用 NX 上直接编译的方式。
 
 ## 使用示例
 可作为开发用参考demo，非原生功能
