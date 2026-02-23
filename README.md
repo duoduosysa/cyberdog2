@@ -123,7 +123,7 @@ function get_not_unlocked()
 #### 步骤 1：安装 Docker Desktop（Windows 用户）
 
 1. 下载 Docker Desktop：https://www.docker.com/products/docker-desktop/
-2. 运行安装程序，安装时勾选 **"Use WSL 2 instead of Hyper-V"**
+2. 运行安装程序（新版默认使用 WSL 2，无需额外勾选）
 3. 安装完成后**重启电脑**
 4. 打开 Docker Desktop，等待左下角显示绿色 **"Engine running"**
 
@@ -165,10 +165,13 @@ mkdir E:\cyberdog_docker
 
 ```powershell
 cd E:\cyberdog_docker
-docker build -t cyberdog_build:1.0 .
+docker build -t cyberdog_img:1.0 .
 ```
 
 > **注意**：Dockerfile 中的依赖包从 `cnbj2m.fds.api.xiaomi.com` 下载。如遇下载失败（小米服务器可能已关闭），需要自行寻找离线包或从已有 Docker 镜像导出。
+通过网盘分享的文件：cyberdog2docker
+链接: https://pan.baidu.com/s/1WjVSxEnjGoRcLz_3fDDTIg?pwd=rwae 提取码: rwae 
+--来自百度网盘超级会员v9的分享
 
 镜像关键内容（Dockerfile 第 11 步安装）：
 - `/usr/local/include/webrtc_headers/` — WebRTC 头文件（`image_transmission` 需要）
@@ -182,7 +185,7 @@ docker build -t cyberdog_build:1.0 .
 ```powershell
 # 启动容器，将本地源码目录映射到容器内
 # Windows 路径用 / 分隔，Docker Desktop 会自动转换
-docker run --privileged=true -it -v E:/机器狗2/cyberdog2/cyberdog_ws_rolling:/home/builder/cyberdog_ws cyberdog_build:1.0 bash
+docker run --privileged=true -it -v E:/机器狗2/cyberdog2/cyberdog_ws_rolling:/home/builder/cyberdog_ws cyberdog_img:1.0 bash
 ```
 
 现在你已进入容器（Linux 终端），在容器内执行：
@@ -204,6 +207,35 @@ colcon build --merge-install
 ```
 
 > **提示**：容器关闭后数据不会丢失（因为源码目录是映射的），但容器内临时安装的工具会丢失。如果想保留容器状态，用 `docker commit` 保存。
+
+#### 已知问题：QEMU 模拟下编译 Segmentation fault
+
+**现象**：在 x86 电脑上通过 QEMU 模拟 arm64 编译时，`gcc`/`g++` 可能随机崩溃（`Segmentation fault`、`internal compiler error`），尤其是 `protocol` 包（它从 `.msg`/`.srv`/`.action` 生成几百个 C/C++ 源文件，编译量极大）。
+
+**原因**：这不是代码问题，而是 QEMU 用户态模拟器（qemu-user-static）在翻译 arm64 指令时偶发崩溃。每次崩溃发生在不同的文件上，说明是随机的。
+
+**解决方法**：限制并行度 + 循环重试。已编译成功的 `.o` 文件会缓存在 `build/` 目录中，每次重试只编译剩余未完成的文件，最终全部编完。
+
+```bash
+# 设置单线程编译，减少 QEMU 压力
+export MAKEFLAGS="-j1"
+
+# 第一步：先编译最容易 segfault 的 protocol 包（自动重试直到成功）
+while ! colcon build --merge-install --executor sequential --packages-select protocol; do echo "===== retrying protocol ====="; sleep 2; done
+
+# 第二步：全量编译所有包（同样自动重试）
+while ! colcon build --merge-install --executor sequential; do echo "===== retrying ====="; sleep 2; done
+```
+
+> **说明**：`--executor sequential` 让 colcon 一次只编译一个包；`MAKEFLAGS="-j1"` 让 make 在包内也只用单线程。`protocol` 包可能需要重试 5-10 次（每次约 5 分钟），总耗时约 30-60 分钟。其他包文件数少，segfault 概率低得多。
+>
+> 如果你的电脑内存较小（< 16GB），建议在 `%USERPROFILE%\.wslconfig` 中增加 WSL2 可用内存：
+> ```ini
+> [wsl2]
+> memory=12GB
+> swap=4GB
+> ```
+> 修改后执行 `wsl --shutdown` 并重启 Docker Desktop。
 
 #### 关于 cyberdog_fds 闭源库（本仓库已修复，无需手动操作）
 
